@@ -1,6 +1,30 @@
 # Now Plexing
 
-An applet for COSMIC EPOCH for monitoring "Now playing" on your Plex server
+Watch your Plex Media Server's active playback sessions from the COSMIC panel.
+
+The panel shows a symbolic icon and how many streams are playing right now.
+Clicking it lists each session — who is watching, what they are watching, how
+far in they are, and the elapsed and total time.
+
+## Setup
+
+Open the popup, press the gear, paste a [Plex token][plex-token], and save.
+
+That is the only setting. The server itself is discovered from the token using
+Plex's resource API, preferring a local connection over a remote one and
+treating the Plex relay as a last resort. If the account owns more than one
+server, the online one is chosen, with alphabetical order breaking ties.
+
+### Where the token is kept
+
+The token is stored with the rest of the COSMIC configuration, in
+`~/.config/cosmic/com.github.gnarr.now-plexing/v1/token`. COSMIC writes its
+configuration world-readable, so Now Plexing narrows that file to `0600` and its
+directory to `0700` after every write. It is still a plaintext file on disk —
+moving it into the Secret Service is the obvious next step.
+
+The token is never written to a log, never placed in a URL, and is redacted from
+every `Debug` rendering in the codebase.
 
 ## Installation
 
@@ -38,6 +62,6 @@ Developers should install [rustup][rustup] and configure their editor to use [ru
 [fluent-guide]: https://projectfluent.org/fluent/guide/hello.html
 [iso-codes]: https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes
 [just]: https://github.com/casey/just
+[plex-token]: https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/
 [rustup]: https://rustup.rs/
 [rust-analyzer]: https://rust-analyzer.github.io/
-[sccache]: https://github.com/mozilla/sccache

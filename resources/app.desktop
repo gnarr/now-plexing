@@ -1,13 +1,13 @@
 [Desktop Entry]
 Name=Now Plexing
-Comment=An applet for COSMIC EPOCH for monitoring "Now playing" on your Plex server
+Comment=Watch your Plex Media Server's active playback sessions from the COSMIC panel
 Type=Application
 Icon=com.github.gnarr.now-plexing
 Exec=now_plexing %F
 Terminal=false
 StartupNotify=true
 Categories=COSMIC
-Keywords=COSMIC
+Keywords=COSMIC;Plex;Media;Now Playing;Sessions;Streaming;
 NoDisplay=true
 X-CosmicApplet=true
 X-CosmicHoverPopup=Auto

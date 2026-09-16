@@ -3,7 +3,7 @@ name = "now_plexing"
 version = "0.1.0"
 edition = "2024"
 license = "MPL-2.0"
-description = "An applet for COSMIC EPOCH for monitoring "Now playing" on your Plex server"
+description = 'An applet for COSMIC EPOCH for monitoring "Now playing" on your Plex server'
 repository = "https://github.com/gnarr/now-plexing"
 
 [build-dependencies]
@@ -12,7 +12,13 @@ xdgen = "0.1"
 [dependencies]
 i18n-embed-fl = "0.10"
 rust-embed = "8.11"
-tokio = { version = "1.52.0", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dependencies.reqwest]
+version = "0.13"
+default-features = false
+features = ["json", "rustls", "http2"]
 
 [dependencies.i18n-embed]
 version = "0.16"
@@ -20,6 +26,7 @@ features = ["fluent-system", "desktop-requester"]
 
 [dependencies.libcosmic]
 git = "https://github.com/pop-os/libcosmic.git"
+rev = "1f8d8786940cc6db59d412153c5a03f69a20375c"
 # See https://github.com/pop-os/libcosmic/blob/master/Cargo.toml for available features.
 features = [
     # Applet support
@@ -36,6 +43,9 @@ features = [
     # Windowing support for X11, Windows, Mac, & Redox
     "winit",
 ]
+
+[dev-dependencies]
+serde_json = "1"
 
 # Uncomment to test a locally-cloned libcosmic
 # [patch.'https://github.com/pop-os/libcosmic']

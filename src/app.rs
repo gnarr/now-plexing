@@ -1,51 +1,147 @@
 // SPDX-License-Identifier: MPL-2.0
 
+//! Application state and the update loop.
+//!
+//! The applet polls Plex on a fixed interval. Rendering lives in [`crate::view`]
+//! and talking to Plex in [`crate::plex`]; this module owns the state that
+//! connects them.
+
 use crate::config::Config;
-use crate::fl;
+use crate::plex::{PlexClient, PlexError, Server, Session};
+use crate::secret::Secret;
+use crate::view::{self, TokenVisibility};
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::platform_specific::shell::wayland::commands::popup::{destroy_popup, get_popup};
-use cosmic::iced::{futures, window::Id, Limits, Subscription};
+use cosmic::iced::{Subscription, time, window::Id};
 use cosmic::prelude::*;
-use cosmic::widget;
-use futures::SinkExt;
+use std::mem;
+use std::time::Duration;
 
-/// The application model stores app-specific state used to describe its interface and
-/// drive its logic.
-#[derive(Default)]
-pub struct AppModel {
-    /// Application state which is managed by the COSMIC runtime.
-    core: cosmic::Core,
-    /// The popup id.
-    popup: Option<Id>,
-    /// Configuration data that persists between application runs.
-    config: Config,
-    /// Example row toggler.
-    example_row: bool,
+/// Plex reports playback positions in whole seconds, so there is nothing to
+/// gain from asking more often than this.
+const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Which screen the popup is currently showing. Both are drawn into the same
+/// popup window rather than opening a second surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewMode {
+    Sessions,
+    Settings,
 }
 
-/// Messages emitted by the application and its widgets.
+/// What the applet currently knows about Plex.
+#[derive(Debug)]
+pub enum Status {
+    /// Nothing configured yet. We never touch the network in this state.
+    NoToken,
+    /// A first answer has not arrived.
+    Loading,
+    /// A successful query. An empty list means nobody is watching.
+    Ready(Vec<Session>),
+    Failed(PlexError),
+}
+
+pub struct AppModel {
+    core: cosmic::Core,
+    popup: Option<Id>,
+    view_mode: ViewMode,
+    config: Config,
+    config_handle: Option<cosmic_config::Config>,
+    plex: PlexClient,
+    /// The server we last reached, reused so that a poll is normally one
+    /// request rather than a round trip through plex.tv.
+    server: Option<Server>,
+    status: Status,
+    /// Guards against a slow Plex accumulating a backlog of polls.
+    refreshing: bool,
+    /// Draft token in the settings view, separate from the saved one.
+    token_input: Secret,
+    token_visibility: TokenVisibility,
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     TogglePopup,
     PopupClosed(Id),
-    SubscriptionChannel,
     UpdateConfig(Config),
-    ToggleExampleRow(bool),
+    Tick,
+    Refreshed(Result<(Server, Vec<Session>), PlexError>),
+    ShowSettings,
+    ShowSessions,
+    TokenInput(Secret),
+    ToggleTokenVisibility,
+    SaveToken,
 }
 
-/// Create a COSMIC application from the app model
+impl AppModel {
+    /// Ask Plex for the current sessions, unless there is nothing to ask with
+    /// or a request is already in flight.
+    fn refresh(&mut self) -> Task<cosmic::Action<Message>> {
+        if self.config.token.is_empty() {
+            self.status = Status::NoToken;
+            self.server = None;
+            return Task::none();
+        }
+
+        if self.refreshing {
+            return Task::none();
+        }
+        self.refreshing = true;
+
+        let plex = self.plex.clone();
+        let token = self.config.token.clone();
+        let server = self.server.clone();
+
+        cosmic::task::future(async move { Message::Refreshed(plex.poll(&token, server).await) })
+    }
+
+    fn open_popup(&mut self) -> Task<cosmic::Action<Message>> {
+        let Some(parent) = self.core.main_window_id() else {
+            return Task::none();
+        };
+
+        let id = Id::unique();
+        self.popup = Some(id);
+        self.view_mode = ViewMode::Sessions;
+
+        // The popup's own sizing comes from `popup_container`; overriding the
+        // positioner's limits here would only contradict it.
+        let settings = self
+            .core
+            .applet
+            .get_popup_settings(parent, id, None, None, None);
+
+        // Show something current immediately instead of waiting out the rest of
+        // the polling interval.
+        Task::batch([get_popup(settings), self.refresh()])
+    }
+
+    fn save_token(&mut self) -> Task<cosmic::Action<Message>> {
+        let token = mem::take(&mut self.token_input);
+
+        match &self.config_handle {
+            Some(handle) => {
+                let _ = self.config.store_token(handle, token);
+            }
+            // Without a config handle the token still works for this run, it
+            // just will not survive a restart.
+            None => self.config.token = token,
+        }
+
+        // A different token may well mean a different account.
+        self.server = None;
+        self.view_mode = ViewMode::Sessions;
+        self.status = Status::Loading;
+        self.refresh()
+    }
+}
+
 impl cosmic::Application for AppModel {
-    /// The async executor that will be used to run your application's commands.
     type Executor = cosmic::executor::Default;
-
-    /// Data that your application receives to its init method.
     type Flags = ();
-
-    /// Messages which the application and its widgets will emit.
     type Message = Message;
 
-    /// Unique identifier in RDNN (reverse domain name notation) format.
-    const APP_ID: &'static str = "com.github.gnarr.now-plexing";
+    const APP_ID: &'static str = crate::APP_ID;
 
     fn core(&self) -> &cosmic::Core {
         &self.core
@@ -55,133 +151,126 @@ impl cosmic::Application for AppModel {
         &mut self.core
     }
 
-    /// Initializes the application with any given flags and startup commands.
     fn init(
         core: cosmic::Core,
         _flags: Self::Flags,
     ) -> (Self, Task<cosmic::Action<Self::Message>>) {
-        // Construct the app model with the runtime's core.
-        let app = AppModel {
-            core,
-            config: cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
-                .map(|context| match Config::get_entry(&context) {
-                    Ok(config) => config,
-                    Err((_errors, config)) => {
-                        // for why in errors {
-                        //     tracing::error!(%why, "error loading app config");
-                        // }
+        let config_handle = cosmic_config::Config::new(Self::APP_ID, Config::VERSION).ok();
 
-                        config
-                    }
-                })
-                .unwrap_or_default(),
-            ..Default::default()
+        // On a first run the key files do not exist yet, so `get_entry`
+        // reports errors while still handing back usable defaults. That is the
+        // normal path here, not a failure.
+        let mut config = config_handle
+            .as_ref()
+            .map_or_else(Config::default, |handle| {
+                Config::get_entry(handle).unwrap_or_else(|(_errors, config)| config)
+            });
+        let client_id = config.ensure_client_id(config_handle.as_ref());
+
+        let mut app = AppModel {
+            core,
+            popup: None,
+            view_mode: ViewMode::Sessions,
+            plex: PlexClient::new(&client_id),
+            server: None,
+            status: Status::Loading,
+            refreshing: false,
+            token_input: Secret::default(),
+            token_visibility: TokenVisibility::Hidden,
+            config,
+            config_handle,
         };
 
-        (app, Task::none())
+        let task = app.refresh();
+        (app, task)
     }
 
     fn on_close_requested(&self, id: Id) -> Option<Message> {
         Some(Message::PopupClosed(id))
     }
 
-    /// Describes the interface based on the current state of the application model.
-    ///
-    /// The applet's button in the panel will be drawn using the main view method.
-    /// This view should emit messages to toggle the applet's popup window, which will
-    /// be drawn using the `view_window` method.
     fn view(&self) -> Element<'_, Self::Message> {
-        self.core
-            .applet
-            .icon_button("display-symbolic")
-            .on_press(Message::TogglePopup)
-            .into()
+        view::panel(&self.core.applet, &self.status)
     }
 
-    /// The applet's popup window will be drawn using this view method. If there are
-    /// multiple poups, you may match the id parameter to determine which popup to
-    /// create a view for.
     fn view_window(&self, _id: Id) -> Element<'_, Self::Message> {
-        let content_list = widget::list_column().add(widget::settings::item(
-            fl!("example-row"),
-            widget::toggler(self.example_row).on_toggle(Message::ToggleExampleRow),
-        ));
+        let content = match self.view_mode {
+            ViewMode::Sessions => view::sessions(&self.status),
+            ViewMode::Settings => view::settings(&self.token_input, self.token_visibility),
+        };
 
-        self.core.applet.popup_container(content_list).into()
+        self.core.applet.popup_container(content).into()
     }
 
-    /// Register subscriptions for this application.
-    ///
-    /// Subscriptions are long-lived async tasks running in the background which
-    /// emit messages to the application through a channel. They may be conditionally
-    /// activated by selectively appending to the subscription batch, and will
-    /// continue to execute for the duration that they remain in the batch.
     fn subscription(&self) -> Subscription<Self::Message> {
-        struct MySubscription;
-
-        Subscription::batch(vec![
-            // Create a subscription which emits updates through a channel.
-            Subscription::run(|| {
-                cosmic::iced::stream::channel(4, move |mut channel: futures::channel::mpsc::Sender<_>| async move {
-                    _ = channel.send(Message::SubscriptionChannel).await;
-
-                    futures::future::pending().await
-                })
-            }),
-            // Watch for application configuration changes.
+        Subscription::batch([
+            time::every(REFRESH_INTERVAL).map(|_| Message::Tick),
             self.core()
                 .watch_config::<Config>(Self::APP_ID)
-                .map(|update| {
-                    // for why in update.errors {
-                    //     tracing::error!(?why, "app config error");
-                    // }
-
-                    Message::UpdateConfig(update.config)
-                }),
+                .map(|update| Message::UpdateConfig(update.config)),
         ])
     }
 
-    /// Handles messages emitted by the application and its widgets.
-    ///
-    /// Tasks may be returned for asynchronous execution of code in the background
-    /// on the application's async runtime. The application will not exit until all
-    /// tasks are finished.
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
         match message {
-            Message::SubscriptionChannel => {
-                // For example purposes only.
-            }
-            Message::UpdateConfig(config) => {
-                self.config = config;
-            }
-            Message::ToggleExampleRow(toggled) => self.example_row = toggled,
             Message::TogglePopup => {
-                return if let Some(p) = self.popup.take() {
-                    destroy_popup(p)
-                } else {
-                    let new_id = Id::unique();
-                    self.popup.replace(new_id);
-                    let mut popup_settings = self.core.applet.get_popup_settings(
-                        self.core.main_window_id().unwrap(),
-                        new_id,
-                        None,
-                        None,
-                        None,
-                    );
-                    popup_settings.positioner.size_limits = Limits::NONE
-                        .max_width(372.0)
-                        .min_width(300.0)
-                        .min_height(200.0)
-                        .max_height(1080.0);
-                    get_popup(popup_settings)
-                }
+                return match self.popup.take() {
+                    Some(id) => destroy_popup(id),
+                    None => self.open_popup(),
+                };
             }
+
             Message::PopupClosed(id) => {
-                if self.popup.as_ref() == Some(&id) {
+                if self.popup == Some(id) {
                     self.popup = None;
+                    self.token_input = Secret::default();
                 }
             }
+
+            Message::UpdateConfig(config) => {
+                let token_changed = config.token != self.config.token;
+                self.config = config;
+                if token_changed {
+                    self.server = None;
+                    return self.refresh();
+                }
+            }
+
+            Message::Tick => return self.refresh(),
+
+            Message::Refreshed(result) => {
+                self.refreshing = false;
+                self.status = match result {
+                    Ok((server, sessions)) => {
+                        self.server = Some(server);
+                        Status::Ready(sessions)
+                    }
+                    // Keep the cached server: a blip is usually transient, and
+                    // retrying a known address beats rediscovery every cycle.
+                    Err(error) => Status::Failed(error),
+                };
+            }
+
+            Message::ShowSettings => {
+                self.view_mode = ViewMode::Settings;
+                self.token_input = self.config.token.clone();
+                self.token_visibility = TokenVisibility::Hidden;
+            }
+
+            Message::ShowSessions => {
+                self.view_mode = ViewMode::Sessions;
+                self.token_input = Secret::default();
+            }
+
+            Message::TokenInput(token) => self.token_input = token,
+
+            Message::ToggleTokenVisibility => {
+                self.token_visibility = self.token_visibility.toggled();
+            }
+
+            Message::SaveToken => return self.save_token(),
         }
+
         Task::none()
     }
 

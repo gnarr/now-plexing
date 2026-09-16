@@ -3,6 +3,13 @@
 mod app;
 mod config;
 mod i18n;
+mod plex;
+mod secret;
+mod view;
+
+/// Reverse-domain identifier, shared by the desktop entry, the COSMIC
+/// configuration directory and the applet itself.
+pub const APP_ID: &str = "com.github.gnarr.now-plexing";
 
 fn main() -> cosmic::iced::Result {
     // Get the system's preferred languages.
