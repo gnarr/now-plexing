@@ -1,0 +1,9 @@
+app-title = Now Plexing
+app-comment = An applet for COSMIC EPOCH for monitoring "Now playing" on your Plex server
+app-keywords =
+about = About
+view = View
+welcome = Welcome to COSMIC! ✨
+page-id = Page { $num }
+git-description = Git commit {$hash} on {$date}
+example-row = Example Row
