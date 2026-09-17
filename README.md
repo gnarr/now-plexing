@@ -10,10 +10,29 @@ far in they are, and the elapsed and total time.
 
 Open the popup, press the gear, paste a [Plex token][plex-token], and save.
 
-That is the only setting. The server itself is discovered from the token using
-Plex's resource API, preferring a local connection over a remote one and
-treating the Plex relay as a last resort. If the account owns more than one
-server, the online one is chosen, with alphabetical order breaking ties.
+There is no server to configure: it is discovered from the token using Plex's
+resource API, preferring a local connection over a remote one and treating the
+Plex relay as a last resort. If the account owns more than one server, the online
+one is chosen, with alphabetical order breaking ties.
+
+### Alerts
+
+Off by default. Turn **Notify me** on in the same settings screen and pick an
+alert level, and Now Plexing posts a desktop notification when the number of
+playing streams crosses that level — once on the way down, once on the way back
+up. At level `0` that means "nobody is streaming" and "someone started again".
+
+It notifies on the *change*, not on the condition, so a quiet server does not
+produce a notification every five seconds. Each new notification replaces the
+previous one rather than stacking, and starting the applet on an already-quiet
+server is silent — there is no change to report yet.
+
+These two settings apply the moment you change them; only the token needs Save.
+
+This is the one thing Now Plexing uses D-Bus for: it calls
+`org.freedesktop.Notifications` on the session bus, which is how COSMIC's
+notification centre is reached. It registers no service and runs no daemon. With
+alerts switched off it makes no D-Bus calls at all.
 
 ### Where the token is kept
 

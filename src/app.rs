@@ -7,6 +7,7 @@
 //! connects them.
 
 use crate::config::Config;
+use crate::notify::{self, Alert, StreamWatcher};
 use crate::plex::{PlexClient, PlexError, Server, Session};
 use crate::secret::Secret;
 use crate::view::{self, TokenVisibility};
@@ -57,6 +58,11 @@ pub struct AppModel {
     /// Draft token in the settings view, separate from the saved one.
     token_input: Secret,
     token_visibility: TokenVisibility,
+    /// Spots when the stream count crosses the alert level.
+    watcher: StreamWatcher,
+    /// Id of the notification we last posted, so the next one replaces it
+    /// instead of stacking. Zero means there is nothing to replace.
+    notification_id: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +77,9 @@ pub enum Message {
     TokenInput(Secret),
     ToggleTokenVisibility,
     SaveToken,
+    ToggleAlerts(bool),
+    AlertLevel(u32),
+    Notified(Option<u32>),
 }
 
 impl AppModel {
@@ -134,6 +143,16 @@ impl AppModel {
         self.status = Status::Loading;
         self.refresh()
     }
+
+    /// Post a desktop notification for a crossing of the alert level.
+    fn announce(&self, alert: Alert) -> Task<cosmic::Action<Message>> {
+        let summary = view::describe_alert(alert);
+        let replaces = self.notification_id;
+
+        cosmic::task::future(
+            async move { Message::Notified(notify::send(&summary, replaces).await) },
+        )
+    }
 }
 
 impl cosmic::Application for AppModel {
@@ -177,6 +196,8 @@ impl cosmic::Application for AppModel {
             refreshing: false,
             token_input: Secret::default(),
             token_visibility: TokenVisibility::Hidden,
+            watcher: StreamWatcher::default(),
+            notification_id: 0,
             config,
             config_handle,
         };
@@ -196,7 +217,9 @@ impl cosmic::Application for AppModel {
     fn view_window(&self, _id: Id) -> Element<'_, Self::Message> {
         let content = match self.view_mode {
             ViewMode::Sessions => view::sessions(&self.status),
-            ViewMode::Settings => view::settings(&self.token_input, self.token_visibility),
+            ViewMode::Settings => {
+                view::settings(&self.token_input, self.token_visibility, &self.config)
+            }
         };
 
         self.core.applet.popup_container(content).into()
@@ -240,15 +263,24 @@ impl cosmic::Application for AppModel {
 
             Message::Refreshed(result) => {
                 self.refreshing = false;
-                self.status = match result {
+                match result {
                     Ok((server, sessions)) => {
+                        let playing = sessions.iter().filter(|s| s.is_playing()).count();
+                        // Only successful polls reach the watcher, so the count
+                        // from before an outage is what recovery compares to.
+                        let alert = self.watcher.observe(playing, self.config.alert_level());
+
                         self.server = Some(server);
-                        Status::Ready(sessions)
+                        self.status = Status::Ready(sessions);
+
+                        if let Some(alert) = alert {
+                            return self.announce(alert);
+                        }
                     }
                     // Keep the cached server: a blip is usually transient, and
                     // retrying a known address beats rediscovery every cycle.
-                    Err(error) => Status::Failed(error),
-                };
+                    Err(error) => self.status = Status::Failed(error),
+                }
             }
 
             Message::ShowSettings => {
@@ -269,6 +301,30 @@ impl cosmic::Application for AppModel {
             }
 
             Message::SaveToken => return self.save_token(),
+
+            // Both alert settings apply the moment they change, so closing the
+            // popup cannot silently discard them.
+            Message::ToggleAlerts(enabled) => match &self.config_handle {
+                Some(handle) => {
+                    let _ = self.config.set_alerts_enabled(handle, enabled);
+                }
+                None => self.config.alerts_enabled = enabled,
+            },
+
+            Message::AlertLevel(level) => match &self.config_handle {
+                Some(handle) => {
+                    let _ = self.config.set_alert_threshold(handle, level);
+                }
+                None => self.config.alert_threshold = level,
+            },
+
+            Message::Notified(id) => {
+                // Hold on to the previous id if the desktop refused, so we do
+                // not lose the ability to replace what is already on screen.
+                if let Some(id) = id {
+                    self.notification_id = id;
+                }
+            }
         }
 
         Task::none()

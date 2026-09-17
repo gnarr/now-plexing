@@ -7,7 +7,9 @@
 //! and localization out of [`crate::plex`].
 
 use crate::app::{Message, Status};
+use crate::config::Config;
 use crate::fl;
+use crate::notify::Alert;
 use crate::plex::{PlaybackState, PlexError, Session, format_duration};
 use crate::secret::Secret;
 use cosmic::cosmic_theme::Spacing;
@@ -20,6 +22,10 @@ const PANEL_ICON: &[u8] = include_bytes!("../resources/icons/now-plexing-symboli
 
 /// Tall lists scroll rather than growing the popup without bound.
 const MAX_SESSION_LIST_HEIGHT: f32 = 360.0;
+
+/// A home server with more concurrent streams than this does not need an applet
+/// to tell it that it is busy.
+const MAX_ALERT_LEVEL: u32 = 10;
 
 /// Whether the token field masks what it holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,7 +141,11 @@ pub fn sessions<'a>(status: &Status) -> Element<'a, Message> {
 
 /// The popup's other screen. Replaces the session list in place rather than
 /// opening a second window.
-pub fn settings<'a>(token: &Secret, visibility: TokenVisibility) -> Element<'a, Message> {
+pub fn settings<'a>(
+    token: &Secret,
+    visibility: TokenVisibility,
+    config: &Config,
+) -> Element<'a, Message> {
     let Spacing { space_xxs, .. } = theme::active().cosmic().spacing;
 
     let header = widget::row::with_children(vec![
@@ -160,7 +170,36 @@ pub fn settings<'a>(token: &Secret, visibility: TokenVisibility) -> Element<'a, 
     .on_input(|value| Message::TokenInput(Secret::from(value)))
     .on_submit(|_| Message::SaveToken);
 
+    // The token needs an explicit Save because it is typed; the alert settings
+    // below apply the moment they change.
     let save = widget::button::suggested(fl!("save")).on_press(Message::SaveToken);
+
+    // A list column groups the two rows into one card and rules between them,
+    // which is what COSMIC Settings looks like. It is also the only way a
+    // toggler row can be used: `Item::toggler` returns a list item, not an
+    // element, so that the whole row becomes clickable.
+    let alerts = widget::list_column()
+        .add(
+            widget::settings::item::builder(fl!("alerts"))
+                .description(fl!("alerts-help"))
+                .toggler(config.alerts_enabled, Message::ToggleAlerts),
+        )
+        .add(
+            widget::settings::item::builder(fl!("alert-level"))
+                .description(fl!("alert-level-help"))
+                // `spin_button` never formats the value itself, so the display
+                // string comes first; the second argument is the
+                // accessibility name.
+                .control(widget::spin_button(
+                    config.alert_threshold.to_string(),
+                    fl!("alert-level"),
+                    config.alert_threshold,
+                    1,
+                    0,
+                    MAX_ALERT_LEVEL,
+                    Message::AlertLevel,
+                )),
+        );
 
     widget::column::with_children(vec![
         applet::padded_control(header).into(),
@@ -171,6 +210,8 @@ pub fn settings<'a>(token: &Secret, visibility: TokenVisibility) -> Element<'a, 
             save.into(),
         ]))
         .into(),
+        applet::padded_control(widget::divider::horizontal::default()).into(),
+        applet::padded_control(alerts).into(),
     ])
     .spacing(space_xxs)
     .padding([space_xxs, 0])
@@ -254,11 +295,51 @@ fn notice<'a>(message: String) -> Element<'a, Message> {
     .into()
 }
 
+/// The one line a notification shows when the stream count crosses the level.
+pub fn describe_alert(alert: Alert) -> String {
+    match alert {
+        Alert::Quiet(count) => fl!("alert-quiet", count = count),
+        Alert::Busy(count) => fl!("alert-busy", count = count),
+    }
+}
+
 fn describe(error: PlexError) -> String {
     match error {
         PlexError::Unauthorized => fl!("error-unauthorized"),
         PlexError::NoServer => fl!("error-no-server"),
         PlexError::Unreachable => fl!("error-unreachable"),
         PlexError::Protocol => fl!("error-protocol"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::describe_alert;
+    use crate::notify::Alert;
+
+    #[test]
+    fn alert_text_selects_the_right_plural_form() {
+        // Asserting on exact copy would break on every reword. What matters is
+        // that Fluent picks a distinct variant for each case instead of falling
+        // through to the plural default, which would read "Only 0 streams".
+        let none = describe_alert(Alert::Quiet(0));
+        let one = describe_alert(Alert::Quiet(1));
+        let many = describe_alert(Alert::Quiet(4));
+
+        assert!(
+            !none.contains('0'),
+            "the zero case should not print a count"
+        );
+        assert!(!one.contains('4') && one != many);
+        assert!(many.contains('4'));
+        assert_ne!(none, one);
+    }
+
+    #[test]
+    fn rising_and_falling_read_differently() {
+        assert_ne!(
+            describe_alert(Alert::Quiet(2)),
+            describe_alert(Alert::Busy(2))
+        );
     }
 }
