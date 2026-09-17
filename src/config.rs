@@ -24,9 +24,21 @@ pub struct Config {
     pub token: Secret,
     /// Opaque, stable device identifier Plex uses to recognise this install.
     pub client_id: String,
+    /// Whether to notify when the number of playing streams crosses the level
+    /// below. Off by default: notifications are opt-in.
+    pub alerts_enabled: bool,
+    /// Notify when this many streams, or fewer, are playing — and again when
+    /// the count climbs back above it.
+    pub alert_threshold: u32,
 }
 
 impl Config {
+    /// The level to alert at, or `None` when alerts are switched off.
+    #[must_use]
+    pub fn alert_level(&self) -> Option<u32> {
+        self.alerts_enabled.then_some(self.alert_threshold)
+    }
+
     /// Store a new token and restrict who can read it.
     pub fn store_token(
         &mut self,

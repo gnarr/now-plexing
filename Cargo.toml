@@ -14,6 +14,9 @@ i18n-embed-fl = "0.10"
 rust-embed = "8.11"
 serde = { version = "1", features = ["derive"] }
 uuid = { version = "1", features = ["v4"] }
+# Only used to reach the desktop notification daemon. Already in the tree via
+# libcosmic and cosmic-config, so this adds no compilation.
+zbus = { version = "5", features = ["tokio"] }
 
 [dependencies.reqwest]
 version = "0.13"
@@ -46,6 +49,9 @@ features = [
 
 [dev-dependencies]
 serde_json = "1"
+# Only for the ignored test that sends a real notification; zbus needs a tokio
+# runtime to drive it. Already in the tree via reqwest and libcosmic.
+tokio = { version = "1", features = ["rt", "net", "time"] }
 
 # Uncomment to test a locally-cloned libcosmic
 # [patch.'https://github.com/pop-os/libcosmic']

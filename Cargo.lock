@@ -3400,8 +3400,10 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
+ "tokio",
  "uuid",
  "xdgen",
+ "zbus",
 ]
 
 [[package]]

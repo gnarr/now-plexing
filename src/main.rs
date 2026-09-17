@@ -3,6 +3,7 @@
 mod app;
 mod config;
 mod i18n;
+mod notify;
 mod plex;
 mod secret;
 mod view;
