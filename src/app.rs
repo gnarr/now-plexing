@@ -12,9 +12,9 @@ use crate::plex::{PlexClient, PlexError, Server, Session};
 use crate::secret::Secret;
 use crate::view::{self, TokenVisibility};
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
-use cosmic::iced::platform_specific::shell::wayland::commands::popup::{destroy_popup, get_popup};
 use cosmic::iced::{Subscription, time, window::Id};
 use cosmic::prelude::*;
+use cosmic::surface::action::{LiveSettings, app_popup, destroy_popup};
 use std::mem;
 use std::time::Duration;
 
@@ -104,25 +104,40 @@ impl AppModel {
         cosmic::task::future(async move { Message::Refreshed(plex.poll(&token, server).await) })
     }
 
+    /// Open the popup through libcosmic's surface system rather than by issuing
+    /// a bare Wayland `get_popup`.
+    ///
+    /// This matters for more than style. Only surfaces created this way are
+    /// registered with the runtime, and an unregistered surface is treated as
+    /// "not a popup" — which makes libcosmic skip the compositor's background
+    /// blur for it, so the popup renders opaque no matter what the system's
+    /// frosted-glass setting says.
     fn open_popup(&mut self) -> Task<cosmic::Action<Message>> {
-        let Some(parent) = self.core.main_window_id() else {
-            return Task::none();
-        };
+        let popup = cosmic::surface::surface_task(app_popup::<Self>(
+            // Take the theme's own blur and corner behaviour for applet popups.
+            |_: &Self| LiveSettings::default(),
+            |app: &mut Self| {
+                let id = Id::unique();
+                app.popup = Some(id);
+                app.view_mode = ViewMode::Sessions;
 
-        let id = Id::unique();
-        self.popup = Some(id);
-        self.view_mode = ViewMode::Sessions;
-
-        // The popup's own sizing comes from `popup_container`; overriding the
-        // positioner's limits here would only contradict it.
-        let settings = self
-            .core
-            .applet
-            .get_popup_settings(parent, id, None, None, None);
+                // The popup's sizing comes from `popup_container`; overriding
+                // the positioner's limits here would only contradict it.
+                app.core.applet.get_popup_settings(
+                    app.core.main_window_id().unwrap_or(Id::RESERVED),
+                    id,
+                    None,
+                    None,
+                    None,
+                )
+            },
+            // No view closure: the popup is drawn by `view_window`.
+            None,
+        ));
 
         // Show something current immediately instead of waiting out the rest of
         // the polling interval.
-        Task::batch([get_popup(settings), self.refresh()])
+        Task::batch([popup, self.refresh()])
     }
 
     fn save_token(&mut self) -> Task<cosmic::Action<Message>> {
@@ -238,7 +253,7 @@ impl cosmic::Application for AppModel {
         match message {
             Message::TogglePopup => {
                 return match self.popup.take() {
-                    Some(id) => destroy_popup(id),
+                    Some(id) => cosmic::surface::surface_task(destroy_popup(id)),
                     None => self.open_popup(),
                 };
             }
