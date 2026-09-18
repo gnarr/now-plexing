@@ -4,7 +4,9 @@ Watch your Plex Media Server's active playback sessions from the COSMIC panel.
 
 The panel shows a symbolic icon and how many streams are playing right now.
 Clicking it lists each session — who is watching, what they are watching, how
-far in they are, and the elapsed and total time.
+far in they are, and the elapsed and total time. While that list is open the
+timers and progress bars count up in real time rather than waiting for the next
+poll; they stop the moment the popup closes, so nothing ticks in the background.
 
 ## Setup
 

@@ -51,6 +51,18 @@ struct Metadata {
     user: Option<User>,
     #[serde(default, rename = "Player")]
     player: Option<Player>,
+    #[serde(default, rename = "Session")]
+    session: Option<SessionInfo>,
+}
+
+/// Plex's own record of the playback session, which is where its identifier
+/// lives.
+#[derive(Debug, Deserialize)]
+struct SessionInfo {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default, rename = "sessionKey")]
+    session_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -81,6 +93,7 @@ impl Metadata {
         let (primary_title, secondary_title) = self.titles();
 
         Session {
+            id: self.identity(),
             user: self
                 .user
                 .as_ref()
@@ -93,6 +106,27 @@ impl Metadata {
             position: millis(self.view_offset).unwrap_or_default(),
             duration: millis(self.duration),
         }
+    }
+
+    /// Something stable to recognise this stream by on the next poll.
+    ///
+    /// Plex keeps a session's id for the life of the stream. When it does not
+    /// give us one, who-is-watching-what is stable enough across the few
+    /// seconds between two polls.
+    fn identity(&self) -> String {
+        self.session
+            .as_ref()
+            .and_then(|session| {
+                session
+                    .id
+                    .as_deref()
+                    .or(session.session_key.as_deref())
+                    .and_then(trimmed)
+            })
+            .unwrap_or_else(|| {
+                let user = self.user.as_ref().and_then(|user| user.title.as_deref());
+                format!("{}\u{1f}{}", user.unwrap_or_default(), self.title)
+            })
     }
 
     /// The headline and the line beneath it, chosen per media type.
@@ -272,7 +306,7 @@ mod tests {
         assert_eq!(session.secondary_title, None);
         assert_eq!(session.position, Duration::ZERO);
         assert_eq!(session.duration, None);
-        assert_eq!(session.progress(), None);
+        assert_eq!(session.progress_after(Duration::ZERO), None);
         // An unreported player state must not be mistaken for playing.
         assert_eq!(session.state, PlaybackState::Other);
     }
@@ -310,7 +344,7 @@ mod tests {
         assert_eq!(session.kind, MediaKind::Other);
         assert_eq!(session.position, Duration::from_secs(45));
         assert_eq!(session.duration, None);
-        assert_eq!(session.progress(), None);
+        assert_eq!(session.progress_after(Duration::ZERO), None);
     }
 
     #[test]
@@ -323,6 +357,40 @@ mod tests {
         let session = &sessions(json)[0];
         assert_eq!(session.user, None);
         assert_eq!(session.primary_title, "Ep");
+    }
+
+    #[test]
+    fn the_plex_session_id_identifies_a_stream() {
+        let json = r#"{"MediaContainer":{"Metadata":[{
+          "type":"movie","title":"A",
+          "Session":{"id":"abc123","bandwidth":4000,"location":"lan"}
+        }]}}"#;
+
+        assert_eq!(sessions(json)[0].id, "abc123");
+    }
+
+    #[test]
+    fn the_session_key_stands_in_when_there_is_no_id() {
+        let json = r#"{"MediaContainer":{"Metadata":[{
+          "type":"movie","title":"A","Session":{"sessionKey":"42"}
+        }]}}"#;
+
+        assert_eq!(sessions(json)[0].id, "42");
+    }
+
+    #[test]
+    fn without_a_session_plex_gives_us_who_is_watching_what() {
+        // Identity only has to survive the few seconds between two polls, so
+        // the viewer and the title are enough to fall back on.
+        let json = r#"{"MediaContainer":{"Metadata":[
+          {"type":"movie","title":"A","User":{"title":"Gunnar"}},
+          {"type":"movie","title":"B","User":{"title":"Gunnar"}},
+          {"type":"movie","title":"A","User":{"title":"Terry"}}
+        ]}}"#;
+
+        let sessions = sessions(json);
+        assert_ne!(sessions[0].id, sessions[1].id);
+        assert_ne!(sessions[0].id, sessions[2].id);
     }
 
     #[test]

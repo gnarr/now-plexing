@@ -16,6 +16,7 @@ use cosmic::cosmic_theme::Spacing;
 use cosmic::iced::{Alignment, Length};
 use cosmic::prelude::*;
 use cosmic::{applet, theme, widget};
+use std::time::Duration;
 
 /// Our own mark, tinted by the panel's foreground colour at draw time.
 const PANEL_ICON: &[u8] = include_bytes!("../resources/icons/now-plexing-symbolic.svg");
@@ -103,7 +104,10 @@ pub fn panel<'a>(applet: &applet::Context, status: &Status) -> Element<'a, Messa
 }
 
 /// The popup's default screen: who is watching what.
-pub fn sessions<'a>(status: &Status) -> Element<'a, Message> {
+///
+/// `elapsed` is how long ago Plex was last asked, used to carry playing streams
+/// forward so their timers do not sit frozen between polls.
+pub fn sessions<'a>(status: &Status, elapsed: Duration) -> Element<'a, Message> {
     let Spacing {
         space_xxs, space_s, ..
     } = theme::active().cosmic().spacing;
@@ -119,14 +123,17 @@ pub fn sessions<'a>(status: &Status) -> Element<'a, Message> {
         Status::Loading => notice(fl!("loading")),
         Status::Failed(error) => notice(describe(*error)),
         Status::Ready(sessions) if sessions.is_empty() => notice(fl!("nothing-playing")),
-        Status::Ready(sessions) => {
-            widget::column::with_children(sessions.iter().map(session_row).collect::<Vec<_>>())
-                .spacing(space_s)
-                .apply(widget::scrollable)
-                .apply(widget::container)
-                .max_height(MAX_SESSION_LIST_HEIGHT)
-                .into()
-        }
+        Status::Ready(sessions) => widget::column::with_children(
+            sessions
+                .iter()
+                .map(|session| session_row(session, elapsed))
+                .collect::<Vec<_>>(),
+        )
+        .spacing(space_s)
+        .apply(widget::scrollable)
+        .apply(widget::container)
+        .max_height(MAX_SESSION_LIST_HEIGHT)
+        .into(),
     };
 
     widget::column::with_children(vec![
@@ -232,7 +239,7 @@ fn header_row<'a>(
 }
 
 /// One stream: who, what, and how far in.
-fn session_row<'a>(session: &Session) -> Element<'a, Message> {
+fn session_row<'a>(session: &Session, elapsed: Duration) -> Element<'a, Message> {
     let Spacing { space_xxxs, .. } = theme::active().cosmic().spacing;
 
     let mut lines: Vec<Element<'a, Message>> = Vec::with_capacity(5);
@@ -247,7 +254,7 @@ fn session_row<'a>(session: &Session) -> Element<'a, Message> {
     }
 
     // Live content has no end, so there is no meaningful bar to draw.
-    if let Some(progress) = session.progress() {
+    if let Some(progress) = session.progress_after(elapsed) {
         lines.push(
             widget::determinate_linear(progress)
                 .width(Length::Fill)
@@ -255,17 +262,17 @@ fn session_row<'a>(session: &Session) -> Element<'a, Message> {
         );
     }
 
-    lines.push(playback_times(session));
+    lines.push(playback_times(session, elapsed));
 
     applet::padded_control(widget::column::with_children(lines).spacing(space_xxxs)).into()
 }
 
 /// `2:17:42 / 2:43:48`, preceded by a pause glyph when the stream is paused.
-fn playback_times<'a>(session: &Session) -> Element<'a, Message> {
-    let elapsed = format_duration(session.position);
+fn playback_times<'a>(session: &Session, elapsed: Duration) -> Element<'a, Message> {
+    let position = format_duration(session.position_after(elapsed));
     let label = match session.duration {
-        Some(total) => format!("{elapsed} / {}", format_duration(total)),
-        None => elapsed,
+        Some(total) => format!("{position} / {}", format_duration(total)),
+        None => position,
     };
 
     let mut parts: Vec<Element<'a, Message>> = Vec::with_capacity(2);
